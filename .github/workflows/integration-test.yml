@@ -18,7 +18,7 @@ jobs:
           - 7199:7199
         env:
           LOCAL_JMX: "no"
-          JVM_OPTS: "-Djava.rmi.server.hostname=127.0.0.1 -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false"
+          JMX_HOST: "127.0.0.1"
         options: >-
           --health-cmd "cqlsh -e 'describe cluster'"
           --health-interval 30s
@@ -84,11 +84,15 @@ jobs:
         echo "$response"
         echo "=== END METRICS ==="
 
-        # Verify we got actual Cassandra metrics, not just empty output
-        if echo "$response" | grep -q "cassandra"; then
-          echo "SUCCESS: Found Cassandra metrics"
+        # Count actual metric lines (not comments/headers)
+        metric_lines=$(echo "$response" | grep -v "^#" | grep -c "." || true)
+        echo "Metric data lines found: $metric_lines"
+
+        # Verify we got actual metric values, not just headers
+        if [ "$metric_lines" -gt 0 ]; then
+          echo "SUCCESS: Found $metric_lines metric values"
         else
-          echo "FAILURE: No Cassandra metrics found"
+          echo "FAILURE: No metric values found (only headers)"
           exit 1
         fi
 

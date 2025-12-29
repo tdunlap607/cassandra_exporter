@@ -10,21 +10,6 @@ jobs:
   integration-test:
     runs-on: ubuntu-latest
 
-    services:
-      cassandra:
-        image: cassandra:4.1
-        ports:
-          - 9042:9042
-          - 7199:7199
-        env:
-          LOCAL_JMX: "no"
-          JMX_HOST: "127.0.0.1"
-        options: >-
-          --health-cmd "cqlsh -e 'describe cluster'"
-          --health-interval 30s
-          --health-timeout 10s
-          --health-retries 10
-
     steps:
     - uses: actions/checkout@v6
 
@@ -43,16 +28,34 @@ jobs:
     - name: Verify JAR was built
       run: ls -la build/libs/*-all.jar
 
+    - name: Start Cassandra with JMX enabled
+      run: |
+        docker run -d --name cassandra \
+          --network host \
+          -e LOCAL_JMX=no \
+          -e JMX_HOST=127.0.0.1 \
+          cassandra:4.1
+
     - name: Wait for Cassandra to be ready
       run: |
-        echo "Waiting for Cassandra JMX to be available..."
+        echo "Waiting for Cassandra to start..."
+        for i in {1..60}; do
+          if docker exec cassandra cqlsh -e "describe cluster" 2>/dev/null; then
+            echo "Cassandra CQL is ready"
+            break
+          fi
+          echo "Attempt $i: Cassandra not ready yet..."
+          sleep 5
+        done
+
+        echo "Waiting for JMX port..."
         for i in {1..30}; do
           if nc -z localhost 7199; then
             echo "Cassandra JMX is ready"
             break
           fi
-          echo "Attempt $i: Cassandra JMX not ready yet..."
-          sleep 5
+          echo "Attempt $i: JMX not ready yet..."
+          sleep 2
         done
 
     - name: Create test config
@@ -102,3 +105,5 @@ jobs:
         if [ -f exporter.pid ]; then
           kill $(cat exporter.pid) 2>/dev/null || true
         fi
+        docker stop cassandra 2>/dev/null || true
+        docker rm cassandra 2>/dev/null || true

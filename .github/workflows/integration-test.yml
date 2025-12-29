@@ -78,7 +78,11 @@ jobs:
     - name: Test metrics endpoint returns data
       run: |
         response=$(curl -sf http://localhost:8080/metrics)
-        echo "$response" | head -50
+
+        # Print all metrics for visual validation
+        echo "=== METRICS OUTPUT ==="
+        echo "$response"
+        echo "=== END METRICS ==="
 
         # Verify we got actual Cassandra metrics, not just empty output
         if echo "$response" | grep -q "cassandra"; then

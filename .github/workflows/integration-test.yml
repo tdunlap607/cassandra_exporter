@@ -28,6 +28,36 @@ jobs:
     - name: Verify JAR was built
       run: ls -la build/libs/*-all.jar
 
+    - name: Start Cassandra with JMX enabled
+      run: |
+        docker run -d --name cassandra \
+          --network host \
+          -e LOCAL_JMX=no \
+          -e JVM_EXTRA_OPTS="-Djava.rmi.server.hostname=127.0.0.1 -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Dcom.sun.management.jmxremote.rmi.port=7199" \
+          cassandra:4.1
+
+    - name: Wait for Cassandra to be ready
+      run: |
+        echo "Waiting for Cassandra to start..."
+        for i in {1..60}; do
+          if docker exec cassandra cqlsh -e "describe cluster" 2>/dev/null; then
+            echo "Cassandra CQL is ready"
+            break
+          fi
+          echo "Attempt $i: Cassandra not ready yet..."
+          sleep 5
+        done
+
+        echo "Waiting for JMX port..."
+        for i in {1..30}; do
+          if nc -z localhost 7199; then
+            echo "Cassandra JMX is ready"
+            break
+          fi
+          echo "Attempt $i: JMX not ready yet..."
+          sleep 2
+        done
+
     - name: Create test config
       run: |
         cat > test-config.yml << 'EOF'
@@ -35,7 +65,8 @@ jobs:
         ssl: false
         listenAddress: 0.0.0.0
         listenPort: 8080
-        blacklist: []
+        blacklist:
+          - java:lang:memorypool:.*usagethreshold.*
         maxScrapFrequencyInSec:
           50:
             - .*
@@ -43,13 +74,33 @@ jobs:
 
     - name: Start exporter in background
       run: |
-        java -jar build/libs/*-all.jar test-config.yml &
+        java -jar build/libs/*-all.jar test-config.yml > exporter.log 2>&1 &
         echo $! > exporter.pid
-        sleep 5
+        sleep 15
 
-    - name: Test metrics endpoint
+    - name: Show exporter logs
+      run: cat exporter.log
+
+    - name: Test metrics endpoint returns data
       run: |
-        curl -f http://localhost:8080/metrics || (cat exporter.pid | xargs kill 2>/dev/null; exit 1)
+        response=$(curl -sf http://localhost:8080/metrics)
+
+        # Print all metrics for visual validation
+        echo "=== METRICS OUTPUT ==="
+        echo "$response"
+        echo "=== END METRICS ==="
+
+        # Count actual metric lines (not comments/headers)
+        metric_lines=$(echo "$response" | grep -v "^#" | grep -c "." || true)
+        echo "Metric data lines found: $metric_lines"
+
+        # Verify we got actual metric values, not just headers
+        if [ "$metric_lines" -gt 0 ]; then
+          echo "SUCCESS: Found $metric_lines metric values"
+        else
+          echo "FAILURE: No metric values found (only headers)"
+          exit 1
+        fi
 
     - name: Cleanup
       if: always()
@@ -57,3 +108,5 @@ jobs:
         if [ -f exporter.pid ]; then
           kill $(cat exporter.pid) 2>/dev/null || true
         fi
+        docker stop cassandra 2>/dev/null || true
+        docker rm cassandra 2>/dev/null || true

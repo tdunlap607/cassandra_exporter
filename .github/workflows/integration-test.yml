@@ -10,6 +10,21 @@ jobs:
   integration-test:
     runs-on: ubuntu-latest
 
+    services:
+      cassandra:
+        image: cassandra:4.1
+        ports:
+          - 9042:9042
+          - 7199:7199
+        env:
+          LOCAL_JMX: "no"
+          JVM_OPTS: "-Djava.rmi.server.hostname=127.0.0.1 -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false"
+        options: >-
+          --health-cmd "cqlsh -e 'describe cluster'"
+          --health-interval 30s
+          --health-timeout 10s
+          --health-retries 10
+
     steps:
     - uses: actions/checkout@v6
 
@@ -28,6 +43,18 @@ jobs:
     - name: Verify JAR was built
       run: ls -la build/libs/*-all.jar
 
+    - name: Wait for Cassandra to be ready
+      run: |
+        echo "Waiting for Cassandra JMX to be available..."
+        for i in {1..30}; do
+          if nc -z localhost 7199; then
+            echo "Cassandra JMX is ready"
+            break
+          fi
+          echo "Attempt $i: Cassandra JMX not ready yet..."
+          sleep 5
+        done
+
     - name: Create test config
       run: |
         cat > test-config.yml << 'EOF'
@@ -35,7 +62,8 @@ jobs:
         ssl: false
         listenAddress: 0.0.0.0
         listenPort: 8080
-        blacklist: []
+        blacklist:
+          - java:lang:memorypool:.*usagethreshold.*
         maxScrapFrequencyInSec:
           50:
             - .*
@@ -45,11 +73,20 @@ jobs:
       run: |
         java -jar build/libs/*-all.jar test-config.yml &
         echo $! > exporter.pid
-        sleep 5
+        sleep 10
 
-    - name: Test metrics endpoint
+    - name: Test metrics endpoint returns data
       run: |
-        curl -f http://localhost:8080/metrics || (cat exporter.pid | xargs kill 2>/dev/null; exit 1)
+        response=$(curl -sf http://localhost:8080/metrics)
+        echo "$response" | head -50
+
+        # Verify we got actual Cassandra metrics, not just empty output
+        if echo "$response" | grep -q "cassandra"; then
+          echo "SUCCESS: Found Cassandra metrics"
+        else
+          echo "FAILURE: No Cassandra metrics found"
+          exit 1
+        fi
 
     - name: Cleanup
       if: always()
